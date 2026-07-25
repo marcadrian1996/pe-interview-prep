@@ -473,6 +473,10 @@ export default function PEInterviewPrep() {
   const [lastError, setLastError] = useState(null);
   const [debugInfo, setDebugInfo] = useState(null);
   const [showDebug, setShowDebug] = useState(false);
+  const [appPassword, setAppPassword] = useState(null);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState(null);
+  const [passwordChecking, setPasswordChecking] = useState(true);
 
   // ---- ALL useRef ----
   const messagesEndRef = useRef(null);
@@ -484,6 +488,17 @@ export default function PEInterviewPrep() {
   // 1. Detect storage capability once on mount
   useEffect(() => {
     setStorageStatus(storageHelper.detectStatus());
+  }, []);
+
+  // 1b. Load saved app password from localStorage on mount
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const saved = window.localStorage.getItem('pe-prep:app-password');
+        if (saved) setAppPassword(saved);
+      }
+    } catch (e) { /* ok */ }
+    setPasswordChecking(false);
   }, []);
 
   // 2. Set up speech recognition once
@@ -678,14 +693,18 @@ export default function PEInterviewPrep() {
     try {
       const response = await fetch(API_ENDPOINT, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-app-password": appPassword || ''
+        },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-5",
           max_tokens: 1000,
           system: DATA_DRIVEN_PROMPT + "\n\n" + buildCaseContext(caseData),
           messages: [{ role: 'user', content: "[BEGIN INTERVIEW - START WITH FIRST MARKET DATA POINT AND QUESTION]" }]
         })
       });
+      if (response.status === 401) { clearPassword(); throw new Error('Auth expired'); }
       if (!response.ok) throw new Error('API ' + response.status);
       const data = await response.json();
       let text = (data.content || []).filter(c => c && c.type === 'text').map(c => c.text || '').join('\n');
@@ -736,14 +755,18 @@ export default function PEInterviewPrep() {
 
       const response = await fetch(API_ENDPOINT, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-app-password": appPassword || ''
+        },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-5",
           max_tokens: 1000,
           system: systemPrompt + "\n\n" + buildCaseContext(currentCase),
           messages: apiMessages
         })
       });
+      if (response.status === 401) { clearPassword(); throw new Error('Auth expired'); }
       if (!response.ok) throw new Error('API ' + response.status);
       const data = await response.json();
       let text = (data.content || []).filter(c => c && c.type === 'text').map(c => c.text || '').join('\n');
@@ -799,14 +822,18 @@ export default function PEInterviewPrep() {
       const transcript = messages.map(m => (m.role === 'assistant' ? 'INTERVIEWER' : 'CANDIDATE') + ': ' + m.content).join('\n\n');
       const response = await fetch(API_ENDPOINT, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-app-password": appPassword || ''
+        },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-5",
           max_tokens: 2000,
           system: FEEDBACK_PROMPT,
           messages: [{ role: 'user', content: 'CASE: ' + currentCase.name + ' (' + currentCase.sector + ', ' + currentCase.type + ')\n\nTRANSCRIPT:\n' + transcript + '\n\nProvide JSON feedback.' }]
         })
       });
+      if (response.status === 401) { clearPassword(); throw new Error('Auth expired'); }
       if (!response.ok) throw new Error('API ' + response.status);
       const data = await response.json();
       const text = (data.content || []).filter(c => c && c.type === 'text').map(c => c.text || '').join('');
@@ -1000,6 +1027,98 @@ export default function PEInterviewPrep() {
     setLastError(null);
     setActiveTab('overview');
   };
+
+  const submitPassword = async () => {
+    if (!passwordInput.trim()) return;
+    setPasswordError(null);
+    // Verify against the backend by making a lightweight test request
+    try {
+      const response = await fetch(API_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-app-password": passwordInput.trim()
+        },
+        body: JSON.stringify({
+          max_tokens: 10,
+          messages: [{ role: 'user', content: 'hi' }]
+        })
+      });
+      if (response.status === 401) {
+        setPasswordError('Incorrect password');
+        return;
+      }
+      // Any other response (200 or otherwise) means the password was accepted
+      const pw = passwordInput.trim();
+      setAppPassword(pw);
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          window.localStorage.setItem('pe-prep:app-password', pw);
+        }
+      } catch (e) { /* ok */ }
+      setPasswordInput('');
+    } catch (e) {
+      setPasswordError('Could not verify password. Check your connection.');
+    }
+  };
+
+  const clearPassword = () => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem('pe-prep:app-password');
+      }
+    } catch (e) { /* ok */ }
+    setAppPassword(null);
+  };
+
+  // ==================== PASSWORD GATE ====================
+  if (passwordChecking) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <Loader2 className="animate-spin text-slate-400" size={32} />
+      </div>
+    );
+  }
+
+  if (!appPassword) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="bg-white rounded-lg border border-slate-200 p-8 max-w-md w-full shadow-sm">
+          <div className="text-center mb-6">
+            <div className="inline-flex items-center justify-center w-14 h-14 bg-slate-900 text-white rounded-lg mb-4">
+              <Briefcase size={28} />
+            </div>
+            <h1 className="text-2xl font-bold text-slate-900 mb-2">PE Commercial Interview Prep</h1>
+            <p className="text-sm text-slate-600">Enter the access password to continue.</p>
+          </div>
+          <div className="space-y-3">
+            <input
+              type="password"
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitPassword(); }}
+              placeholder="Password"
+              autoFocus
+              className="w-full border border-slate-300 rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
+            />
+            {passwordError && (
+              <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded px-3 py-2">{passwordError}</div>
+            )}
+            <button
+              onClick={submitPassword}
+              disabled={!passwordInput.trim()}
+              className="w-full bg-slate-900 text-white px-4 py-3 rounded-lg font-medium hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Continue
+            </button>
+          </div>
+          <div className="mt-6 text-xs text-slate-400 text-center">
+            The password is set by the app owner. Contact them if you need access.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // ==================== CASE SELECT ====================
   if (phase === 'case-select') {
